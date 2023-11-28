@@ -1,0 +1,95 @@
+name: "Deploy repository to Server Action"
+description: "Deploy repository to server"
+branding:
+  icon: "check-circle"
+  color: "blue"
+
+inputs:
+  branch:
+    description: "Branch to deploy (dev, test, main)"
+    required: true
+  server_host:
+    description: "Server host"
+    required: true
+  server_user:
+    description: "Server username"
+    required: true
+  server_password:
+    description: "Server password"
+    required: true
+  server_port:
+    description: "Server SSH port"
+    required: true
+  target_directory:
+    description: "Target directory on the server"
+    required: true
+  repo_directory:
+    description: "Directory name to place repository files before zipping. Leave empty to zip the root directory."
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        ref: ${{ inputs.branch }}
+
+    - name: Prepare repository for zipping
+      run: |
+        if [ -n "${{ inputs.repo_directory }}" ]; then
+          # If repo_directory is specified, create it and copy files into it
+          mkdir -p ${{ inputs.repo_directory }}
+          cp -R * ${{ inputs.repo_directory }}/
+          ZIP_NAME="moodle_$(date +'%Y%m%d%H%M%S').zip"
+          zip -r $ZIP_NAME ${{ inputs.repo_directory }}
+        else
+          # If repo_directory is empty, zip the current directory
+          ZIP_NAME="moodle_$(date +'%Y%m%d%H%M%S').zip"
+          zip -r $ZIP_NAME .
+        fi
+        echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+      shell: bash
+
+    - name: Copy ZIP to server
+      uses: appleboy/scp-action@master
+      with:
+        host: ${{ inputs.server_host }}
+        username: ${{ inputs.server_user }}
+        password: ${{ inputs.server_password }}
+        port: ${{ inputs.server_port }}
+        source: $ZIP_NAME
+        target: "/tmp"
+
+    - name: Prepare server and deploy
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ inputs.server_host }}
+        username: ${{ inputs.server_user }}
+        password: ${{ inputs.server_password }}
+        port: ${{ inputs.server_port }}
+        script: |
+          full_path="${{ inputs.target_directory }}/${{ inputs.repo_directory }}"
+          zip_file="/tmp/${{ env.ZIP_NAME }}"
+
+          # Check if zip and unzip are installed
+          if ! command -v zip &> /dev/null
+          then
+              echo "zip could not be found, installing..."
+              sudo apt-get update && sudo apt-get install zip -y
+          fi
+
+          if ! command -v unzip &> /dev/null
+          then
+              echo "unzip could not be found, installing..."
+              sudo apt-get update && sudo apt-get install unzip -y
+          fi
+
+          # Remove existing directory and extract ZIP
+          if [ -n "${{ inputs.repo_directory }}" ] && [ -d "$full_path" ]; then
+            rm -rf "$full_path"
+          fi
+          mkdir -p "$full_path"
+          unzip $zip_file -d "$full_path"
+          rm $zip_file
